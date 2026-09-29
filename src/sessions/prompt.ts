@@ -3,11 +3,12 @@ import type {
   SessionUpdateNotification, StopReason, RequestPermissionParams, RequestId,
 } from '../types/acp.js';
 import type { AgentHandle } from '../acp/lifecycle.js';
-import type { McacpConfig } from '../types/config.js';
-import type { ActiveSession, BarePromptEvent, PromptEvent } from './index.js';
+import type { McacpConfig, PermissionPolicy } from '../types/config.js';
+import type { ActiveSession, BarePromptEvent, PromptEvent, SessionSettings } from './index.js';
 import { LifecycleManager } from '../acp/lifecycle.js';
 import { SessionManager } from './index.js';
 import { PermissionEngine } from '../permissions/index.js';
+import { findOptionByCategory } from './config-options.js';
 
 /** Per-agent dispatch table for sessions with active prompts. */
 interface AgentDispatch {
@@ -182,6 +183,26 @@ export class PromptHandler {
     const session = this.sessions.getSession(sessionId);
     const handle = this.lifecycle.getAgent(session.agentId);
     await handle.transport.request('session/set_mode', { sessionId, modeId });
+    if (session.modes) session.modes.currentModeId = modeId;
+    const modeOption = findOptionByCategory(session.configOptions, 'mode');
+    if (modeOption) modeOption.currentValue = modeId;
+  }
+
+  /**
+   * Change a session's permission policy. If a permission request is already
+   * waiting and the new policy decides automatically (allow_all / deny_all),
+   * it is resolved immediately so the agent can continue.
+   */
+  setPermissionPolicy(sessionId: SessionId, policy: PermissionPolicy): SessionSettings {
+    const settings = this.sessions.setPermissionPolicy(sessionId, policy);
+    const session = this.sessions.getSession(sessionId);
+    const pending = session.pendingPermission;
+    if (pending && (policy === 'allow_all' || policy === 'deny_all')) {
+      const outcome = this.permissions.decide(policy, pending.options);
+      session.pendingPermission = null;
+      pending.resolve(outcome);
+    }
+    return settings;
   }
 
   // ---- Global event stream ----
@@ -277,6 +298,7 @@ export class PromptHandler {
           const notif = params as SessionUpdateNotification;
           const target = d.sessions.get(notif.sessionId);
           if (target) {
+            this.sessions.applySettingsUpdate(target, notif.update);
             this.pushEventConsolidated(target, { type: 'update', update: notif.update });
             this.updateAgentStatus(handle, notif.update);
             return;

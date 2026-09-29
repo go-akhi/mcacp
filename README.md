@@ -105,18 +105,29 @@ MCACP exposes 22 tools organized into five groups.
 
 | Tool | Description |
 |------|-------------|
-| `new_session` | Create a session with working directory and permission policy |
+| `new_session` | Create a session with working directory, permission policy, and optional model / thinking level / mode |
 | `load_session` | Resume a persisted session |
 | `list_sessions` | List stored sessions for an agent |
 | `close_session` | Close a session (preserved for later resume) |
+
+### Session settings
+
+| Tool | Description |
+|------|-------------|
+| `get_session_settings` | Show available/current modes, models, config options, and permission policy |
+| `set_model` | Select the session's model |
+| `set_thinking_level` | Select the session's thinking / reasoning level |
+| `set_config_option` | Set any other agent-defined config option |
+| `set_permission_policy` | Change the session's permission policy (`elicit` / `allow_all` / `deny_all` / `operator`) |
 
 ### Interaction
 
 | Tool | Description |
 |------|-------------|
-| `prompt_start` | Send a prompt (returns immediately) |
-| `prompt` | Block until events are available |
+| `prompt_polled` | Send a prompt (returns immediately) |
+| `prompt_sync` | Send a prompt and block until it completes or needs attention |
 | `prompt_events` | Non-blocking poll for events |
+| `events` | Block until any prompted session produces events |
 | `grant_permission` | Resolve a pending permission request (operator mode) |
 | `request_permission` | Send an MCP elicitation to the host for a permission decision |
 | `cancel` | Cancel an in-progress prompt |

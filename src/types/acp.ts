@@ -120,6 +120,8 @@ export interface SessionNewParams {
 export interface SessionNewResult {
   sessionId: SessionId;
   modes?: SessionModeState;
+  models?: SessionModelState;
+  configOptions?: SessionConfigOption[];
 }
 
 export interface SessionLoadParams {
@@ -130,6 +132,8 @@ export interface SessionLoadParams {
 
 export interface SessionLoadResult {
   modes?: SessionModeState;
+  models?: SessionModelState;
+  configOptions?: SessionConfigOption[];
 }
 
 export interface SessionMode {
@@ -150,6 +154,61 @@ export interface SessionSetModeParams {
 
 export interface SessionCancelParams {
   sessionId: SessionId;
+}
+
+// Session config options (model, thought level, mode, and agent-defined selectors)
+
+/** Well-known categories; agents may also use custom strings. */
+export type SessionConfigOptionCategory = 'mode' | 'model' | 'thought_level' | string;
+
+export interface SessionConfigSelectOption {
+  value: string;
+  name: string;
+  description?: string;
+}
+
+export interface SessionConfigSelectGroup {
+  group: string;
+  name: string;
+  options: SessionConfigSelectOption[];
+}
+
+export interface SessionConfigOption {
+  id: string;
+  name: string;
+  description?: string;
+  category?: SessionConfigOptionCategory;
+  type: 'select';
+  currentValue: string;
+  options: SessionConfigSelectOption[] | SessionConfigSelectGroup[];
+}
+
+export interface SessionSetConfigOptionParams {
+  sessionId: SessionId;
+  configId: string;
+  value: string;
+}
+
+export interface SessionSetConfigOptionResult {
+  configOptions: SessionConfigOption[];
+}
+
+// Legacy (unstable) model selection — superseded by config options with category "model"
+
+export interface ModelInfo {
+  modelId: string;
+  name: string;
+  description?: string;
+}
+
+export interface SessionModelState {
+  availableModels: ModelInfo[];
+  currentModelId: string;
+}
+
+export interface SessionSetModelParams {
+  sessionId: SessionId;
+  modelId: string;
 }
 
 // -----------------------------------------------------------------------------
@@ -236,7 +295,8 @@ export type SessionUpdate =
   | ToolCallUpdate
   | ToolCallStatusUpdate
   | AvailableCommandsUpdate
-  | CurrentModeUpdate;
+  | CurrentModeUpdate
+  | ConfigOptionUpdate;
 
 export interface PlanUpdate {
   sessionUpdate: 'plan';
@@ -311,6 +371,11 @@ export interface AvailableCommandsUpdate {
 export interface CurrentModeUpdate {
   sessionUpdate: 'current_mode_update';
   modeState: SessionModeState;
+}
+
+export interface ConfigOptionUpdate {
+  sessionUpdate: 'config_option_update';
+  configOptions: SessionConfigOption[];
 }
 
 // -----------------------------------------------------------------------------

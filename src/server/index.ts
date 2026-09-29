@@ -14,6 +14,7 @@ import { PermissionEngine } from '../permissions/index.js';
 import { AgentRequestHandler } from '../acp/agent-requests.js';
 import { appendFeedback, readFeedback } from '../feedback/index.js';
 import type { ContentBlock, McpServer as AcpMcpServer } from '../types/acp.js';
+import { PermissionPolicySchema } from '../types/config.js';
 
 export async function createServer(configPath?: string) {
   const config = loadConfig(configPath);
@@ -177,13 +178,32 @@ export async function createServer(configPath?: string) {
         z.object({ name: z.string(), command: z.string(), args: z.array(z.string()).optional() }),
         z.object({ type: z.literal('http'), name: z.string(), url: z.string() }),
       ])).optional().describe('MCP servers to make available to the agent'),
-      permissionPolicy: z.enum(['elicit', 'allow_all', 'deny_all', 'operator']).optional()
-        .describe('Permission policy: elicit, allow_all, deny_all, or operator'),
+      permissionPolicy: PermissionPolicySchema.optional()
+        .describe('Permission policy: elicit, allow_all, deny_all, or operator. Defaults to the agent\'s configured policy.'),
+      model: z.string().optional()
+        .describe('Model to select after the session is created (id or display name from the returned models/configOptions)'),
+      thinkingLevel: z.string().optional()
+        .describe('Thinking / reasoning level to select after creation (agent-defined, e.g. "low", "medium", "high")'),
+      modeId: z.string().optional()
+        .describe('Session mode to switch to after creation (agent-defined, e.g. "plan", "acceptEdits")'),
     },
-    async ({ agentId, cwd, mcpServers, permissionPolicy }) => {
-      const result = await sessions.newSession(agentId, cwd, mcpServers as AcpMcpServer[] | undefined, permissionPolicy);
+    async ({ agentId, cwd, mcpServers, permissionPolicy, model, thinkingLevel, modeId }) => {
+      let result = await sessions.newSession(agentId, cwd, mcpServers as AcpMcpServer[] | undefined, permissionPolicy);
       agentRequests.registerSession(result.sessionId, cwd);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+
+      // The session exists at this point, so failures here are reported, not thrown.
+      const warnings: string[] = [];
+      const apply = async (label: string, fn: () => Promise<unknown>) => {
+        try { await fn(); } catch (err) { warnings.push(`${label}: ${err instanceof Error ? err.message : err}`); }
+      };
+      if (modeId) await apply('modeId', () => promptHandler.setMode(result.sessionId, modeId));
+      if (model) await apply('model', () => sessions.setModel(result.sessionId, model));
+      if (thinkingLevel) await apply('thinkingLevel', () => sessions.setThinkingLevel(result.sessionId, thinkingLevel));
+      result = sessions.getSettings(result.sessionId);
+
+      return { content: [{ type: 'text' as const, text: JSON.stringify(
+        warnings.length > 0 ? { ...result, warnings } : result, null, 2,
+      ) }] };
     },
   );
 
@@ -369,6 +389,70 @@ export async function createServer(configPath?: string) {
     },
   );
 
+  // ---- Session settings tools ----
+
+  server.tool(
+    'get_session_settings',
+    'Show the selectable settings of an active session: available/current modes, models, config options (model, thinking level, etc.), and the MCACP permission policy.',
+    { sessionId: z.string().describe('Session ID') },
+    async ({ sessionId }) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify(sessions.getSettings(sessionId), null, 2) }],
+    }),
+  );
+
+  server.tool(
+    'set_model',
+    'Select the model for an active session. Accepts a model id or display name; call get_session_settings to see available models.',
+    {
+      sessionId: z.string().describe('Session ID'),
+      model: z.string().describe('Model id or display name'),
+    },
+    async ({ sessionId, model }) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify(await sessions.setModel(sessionId, model), null, 2) }],
+    }),
+  );
+
+  server.tool(
+    'set_thinking_level',
+    'Select the thinking / reasoning level for an active session (agent-defined, e.g. "low", "medium", "high"). Call get_session_settings to see available levels.',
+    {
+      sessionId: z.string().describe('Session ID'),
+      level: z.string().describe('Thinking level value or display name'),
+    },
+    async ({ sessionId, level }) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify(await sessions.setThinkingLevel(sessionId, level), null, 2) }],
+    }),
+  );
+
+  server.tool(
+    'set_config_option',
+    'Set any agent-defined session config option by id (see configOptions in get_session_settings). Use for selectors not covered by set_model / set_thinking_level / set_mode.',
+    {
+      sessionId: z.string().describe('Session ID'),
+      configId: z.string().describe('Config option id'),
+      value: z.string().describe('Value (or display name) to select'),
+    },
+    async ({ sessionId, configId, value }) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify(
+        await sessions.setConfigOption(sessionId, configId, value), null, 2,
+      ) }],
+    }),
+  );
+
+  server.tool(
+    'set_permission_policy',
+    'Change how MCACP answers permission requests for an active session: elicit (ask the host user), allow_all, deny_all, or operator (surface as permission_request events). A permission request already waiting is resolved immediately when switching to allow_all or deny_all. The agent\'s own permission mode (e.g. "acceptEdits", "bypassPermissions") is a session mode — use set_mode for that.',
+    {
+      sessionId: z.string().describe('Session ID'),
+      policy: PermissionPolicySchema.describe('New permission policy'),
+    },
+    async ({ sessionId, policy }) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify(
+        promptHandler.setPermissionPolicy(sessionId, policy), null, 2,
+      ) }],
+    }),
+  );
+
   // ---- Status tools ----
 
   server.tool(
@@ -483,6 +567,7 @@ export async function createServer(configPath?: string) {
         }
       };
       await server.connect(transport);
+
     },
   };
 }

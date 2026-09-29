@@ -31,17 +31,28 @@ export class PermissionEngine {
     }
   }
 
-  private handleAllowAll(params: RequestPermissionParams): RequestPermissionOutcome {
-    const opt = params.options.find(o => o.kind === 'allow_once' || o.kind === 'allow_always');
+  /** Pick an outcome automatically for the allow_all / deny_all policies. */
+  decide(
+    policy: 'allow_all' | 'deny_all',
+    options: Array<{ optionId: string; kind: string }>,
+  ): RequestPermissionOutcome {
+    if (policy === 'allow_all') {
+      const opt = options.find(o => o.kind === 'allow_once' || o.kind === 'allow_always');
+      if (opt) return { selected: { optionId: opt.optionId } };
+      if (options.length > 0) return { selected: { optionId: options[0].optionId } };
+      return { cancelled: {} };
+    }
+    const opt = options.find(o => o.kind === 'reject_once' || o.kind === 'reject_always');
     if (opt) return { selected: { optionId: opt.optionId } };
-    if (params.options.length > 0) return { selected: { optionId: params.options[0].optionId } };
     return { cancelled: {} };
   }
 
+  private handleAllowAll(params: RequestPermissionParams): RequestPermissionOutcome {
+    return this.decide('allow_all', params.options);
+  }
+
   private handleDenyAll(params: RequestPermissionParams): RequestPermissionOutcome {
-    const opt = params.options.find(o => o.kind === 'reject_once' || o.kind === 'reject_always');
-    if (opt) return { selected: { optionId: opt.optionId } };
-    return { cancelled: {} };
+    return this.decide('deny_all', params.options);
   }
 
   private async handleElicit(

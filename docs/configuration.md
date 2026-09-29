@@ -170,6 +170,34 @@ Use `events(timeoutMs?, nagleMs?)` to block across all prompted sessions simulta
 | `operator` | Surfaces as `permission_request` events — the calling agent decides |
 
 Set per-agent via `agent_servers[id].permissionPolicy` or globally via `defaultPermissionPolicy`.
+Override per session with `new_session({ permissionPolicy })`, or change a running session with
+`set_permission_policy`. Switching to `allow_all` or `deny_all` while a permission request is waiting
+resolves it immediately.
+
+The policy controls how MCACP answers the agent's permission requests. Many agents also have their
+own permission mode (for example Claude Code's `default`, `acceptEdits`, `plan`, `bypassPermissions`),
+exposed as a session mode — switch it with `set_mode` or `new_session({ modeId })`.
+
+## Model and Thinking Level
+
+Agents advertise selectable settings when a session is created. `new_session`, `load_session`, and
+`get_session_settings` return them:
+
+- `configOptions` — ACP session config options. Options with category `model` and `thought_level`
+  drive `set_model` and `set_thinking_level`; any other option can be set with `set_config_option`.
+- `models` — the older model list, used by `set_model` when the agent has no `model` config option.
+- `modes` — available session modes.
+
+```json
+new_session({ "agentId": "claude-code", "cwd": "/repo", "model": "opus", "thinkingLevel": "high" })
+set_model({ "sessionId": "...", "model": "sonnet" })
+set_thinking_level({ "sessionId": "...", "level": "medium" })
+```
+
+Values match an option's id or display name, case-insensitively. An unknown value returns an error
+listing the valid choices. If `new_session` can't apply `model`, `thinkingLevel`, or `modeId`, the
+session is still created and the result includes a `warnings` array. Which settings exist depends
+on the agent.
 
 **Note on operator policy with `prompt_sync`:** Since the caller is blocked waiting for completion,
 a `permission_request` causes `prompt_sync` to return early so the caller can respond via

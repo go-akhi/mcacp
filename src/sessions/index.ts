@@ -1,9 +1,23 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { resolve, join, sep, dirname } from 'node:path';
 import type { McacpConfig, PermissionPolicy } from '../types/config.js';
-import type { SessionId, SessionNewResult, SessionLoadResult, McpServer, SessionUpdate, StopReason } from '../types/acp.js';
-import type { AgentHandle } from '../acp/lifecycle.js';
+import type {
+  SessionId, SessionNewResult, SessionLoadResult, McpServer, SessionUpdate, StopReason,
+  SessionModeState, SessionModelState, SessionConfigOption, SessionSetConfigOptionResult,
+} from '../types/acp.js';
 import { LifecycleManager } from '../acp/lifecycle.js';
+import { getAgentConfig } from '../config/index.js';
+import { findOptionByCategory, resolveChoice } from './config-options.js';
+
+/** Snapshot of a session's selectable settings as last reported by the agent. */
+export interface SessionSettings {
+  sessionId: SessionId;
+  agentId: string;
+  permissionPolicy: PermissionPolicy;
+  modes?: SessionModeState;
+  models?: SessionModelState;
+  configOptions?: SessionConfigOption[];
+}
 
 export interface SessionFile {
   sessionId: SessionId;
@@ -41,6 +55,9 @@ export interface ActiveSession {
   chunkBuffer: { text: string; updateType: string } | null;
   /** Pending flush timer for chunk consolidation */
   chunkTimer: ReturnType<typeof setTimeout> | null;
+  modes?: SessionModeState;
+  models?: SessionModelState;
+  configOptions?: SessionConfigOption[];
 }
 
 export interface PendingPermission {
@@ -60,9 +77,9 @@ export class SessionManager {
 
   async newSession(
     agentId: string, cwd: string, mcpServers?: McpServer[], permissionPolicy?: PermissionPolicy,
-  ): Promise<{ sessionId: SessionId; modes?: SessionNewResult['modes'] }> {
+  ): Promise<SessionSettings> {
     const handle = this.lifecycle.getAgent(agentId);
-    const policy = permissionPolicy ?? this.config.defaultPermissionPolicy;
+    const policy = permissionPolicy ?? getAgentConfig(this.config, agentId).permissionPolicy;
     const result = await handle.transport.request('session/new', {
       cwd, mcpServers: mcpServers ?? [],
     }) as SessionNewResult;
@@ -71,6 +88,7 @@ export class SessionManager {
       sessionId: result.sessionId, agentId, permissionPolicy: policy, pendingPermission: null,
       promptState: 'idle', eventQueue: [], waiters: [],
       chunkBuffer: null, chunkTimer: null,
+      modes: result.modes, models: result.models, configOptions: result.configOptions,
     });
     handle.activeSessions.add(result.sessionId);
     this.saveSessionFile({
@@ -78,12 +96,12 @@ export class SessionManager {
       createdAt: new Date().toISOString(), lastActiveAt: new Date().toISOString(),
     });
     this.lifecycle.touchActivity(agentId);
-    return { sessionId: result.sessionId, modes: result.modes };
+    return this.getSettings(result.sessionId);
   }
 
   async loadSession(
     agentId: string, sessionId: SessionId, cwd: string, mcpServers?: McpServer[],
-  ): Promise<{ sessionId: SessionId; modes?: SessionLoadResult['modes'] }> {
+  ): Promise<SessionSettings> {
     const handle = this.lifecycle.getAgent(agentId);
     if (!handle.capabilities.loadSession) {
       throw new Error(`Agent "${agentId}" does not support loading sessions`);
@@ -93,11 +111,12 @@ export class SessionManager {
     }) as SessionLoadResult;
 
     const file = this.readSessionFile(agentId, sessionId);
-    const policy = file?.permissionPolicy ?? this.config.defaultPermissionPolicy;
+    const policy = file?.permissionPolicy ?? getAgentConfig(this.config, agentId).permissionPolicy;
     this.activeSessions.set(sessionId, {
       sessionId, agentId, permissionPolicy: policy, pendingPermission: null,
       promptState: 'idle', eventQueue: [], waiters: [],
       chunkBuffer: null, chunkTimer: null,
+      modes: result?.modes, models: result?.models, configOptions: result?.configOptions,
     });
     handle.activeSessions.add(sessionId);
     this.saveSessionFile({
@@ -106,7 +125,104 @@ export class SessionManager {
       lastActiveAt: new Date().toISOString(),
     });
     this.lifecycle.touchActivity(agentId);
-    return { sessionId, modes: result.modes };
+    return this.getSettings(sessionId);
+  }
+
+  getSettings(sessionId: SessionId): SessionSettings {
+    const s = this.getSession(sessionId);
+    return {
+      sessionId: s.sessionId, agentId: s.agentId, permissionPolicy: s.permissionPolicy,
+      modes: s.modes, models: s.models, configOptions: s.configOptions,
+    };
+  }
+
+  /** Set an agent-defined config option (session/set_config_option). */
+  async setConfigOption(sessionId: SessionId, configId: string, value: string): Promise<SessionSettings> {
+    const session = this.getSession(sessionId);
+    const option = session.configOptions?.find(o => o.id === configId);
+    const resolved = option ? resolveChoice(option, value) : value;
+    const handle = this.lifecycle.getAgent(session.agentId);
+    const result = await handle.transport.request('session/set_config_option', {
+      sessionId, configId, value: resolved,
+    }) as SessionSetConfigOptionResult | null;
+    if (result?.configOptions) {
+      session.configOptions = result.configOptions;
+    } else if (option) {
+      option.currentValue = resolved;
+    }
+    this.syncFromConfigOptions(session);
+    this.lifecycle.touchActivity(session.agentId);
+    return this.getSettings(sessionId);
+  }
+
+  /**
+   * Select the session's model. Uses the "model" config option when the agent
+   * advertises one, otherwise the older session/set_model method.
+   */
+  async setModel(sessionId: SessionId, model: string): Promise<SessionSettings> {
+    const session = this.getSession(sessionId);
+    const option = findOptionByCategory(session.configOptions, 'model');
+    if (option) return this.setConfigOption(sessionId, option.id, model);
+
+    if (!session.models) {
+      throw new Error(`Agent "${session.agentId}" does not advertise model selection for this session`);
+    }
+    const match = session.models.availableModels.find(m => m.modelId === model)
+      ?? session.models.availableModels.find(m =>
+        m.modelId.toLowerCase() === model.toLowerCase() || m.name.toLowerCase() === model.toLowerCase());
+    if (!match) {
+      const valid = session.models.availableModels.map(m => m.modelId).join(', ');
+      throw new Error(`"${model}" is not an available model. Available models: ${valid}`);
+    }
+    const handle = this.lifecycle.getAgent(session.agentId);
+    await handle.transport.request('session/set_model', { sessionId, modelId: match.modelId });
+    session.models.currentModelId = match.modelId;
+    this.lifecycle.touchActivity(session.agentId);
+    return this.getSettings(sessionId);
+  }
+
+  /** Select the session's thinking / reasoning level via the "thought_level" config option. */
+  async setThinkingLevel(sessionId: SessionId, level: string): Promise<SessionSettings> {
+    const session = this.getSession(sessionId);
+    const option = findOptionByCategory(session.configOptions, 'thought_level');
+    if (!option) {
+      throw new Error(
+        `Agent "${session.agentId}" does not advertise a thinking level option for this session ` +
+        '(availability can depend on the selected model — see get_session_settings)',
+      );
+    }
+    return this.setConfigOption(sessionId, option.id, level);
+  }
+
+  /** Change the MCACP permission policy for an active session and persist it. */
+  setPermissionPolicy(sessionId: SessionId, policy: PermissionPolicy): SessionSettings {
+    const session = this.getSession(sessionId);
+    session.permissionPolicy = policy;
+    const file = this.readSessionFile(session.agentId, sessionId);
+    if (file) { file.permissionPolicy = policy; this.saveSessionFile(file); }
+    return this.getSettings(sessionId);
+  }
+
+  /** Apply a session/update notification that changes session settings. */
+  applySettingsUpdate(session: ActiveSession, update: SessionUpdate): void {
+    if (!('sessionUpdate' in update)) return;
+    if (update.sessionUpdate === 'config_option_update') {
+      session.configOptions = update.configOptions;
+      this.syncFromConfigOptions(session);
+    } else if (update.sessionUpdate === 'current_mode_update' && session.modes) {
+      // Spec sends currentModeId; older agents send a full modeState.
+      const u = update as unknown as { currentModeId?: string; modeState?: SessionModeState };
+      const modeId = u.currentModeId ?? u.modeState?.currentModeId;
+      if (modeId) session.modes.currentModeId = modeId;
+    }
+  }
+
+  /** Keep the legacy modes/models views consistent with config option values. */
+  private syncFromConfigOptions(session: ActiveSession): void {
+    const mode = findOptionByCategory(session.configOptions, 'mode');
+    if (mode && session.modes) session.modes.currentModeId = mode.currentValue;
+    const model = findOptionByCategory(session.configOptions, 'model');
+    if (model && session.models) session.models.currentModelId = model.currentValue;
   }
 
   listSessions(agentId: string): SessionFile[] {
