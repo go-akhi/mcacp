@@ -108,9 +108,10 @@ export class RegistryManager {
       if (!bin) throw new Error(`No binary for platform "${platform}". Available: ${Object.keys(entry.distribution.binary).join(', ')}`);
       const installDir = resolve(this.config.installDir, entry.id);
       mkdirSync(installDir, { recursive: true });
-      const archivePath = join(installDir, 'archive.tar.gz');
+      const archivePath = join(installDir, archiveFileName(bin.archive));
       execFileSync('curl', ['-fsSL', '-o', archivePath, bin.archive], { cwd: installDir });
-      execFileSync('tar', ['-xzf', archivePath, '-C', installDir], { cwd: installDir });
+      const [cmd, args] = extractCommand(archivePath, installDir);
+      execFileSync(cmd, args, { cwd: installDir });
       try { rmSync(archivePath); } catch {}
       const inst: InstalledAgent = {
         id: entry.id, name: entry.name, version: entry.version,
@@ -259,6 +260,31 @@ function getPlatformKey(): string {
   const os = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'darwin' : 'linux';
   const arch = process.arch === 'arm64' ? 'aarch64' : process.arch === 'x64' ? 'x86_64' : process.arch;
   return `${os}-${arch}`;
+}
+
+/** Local file name for a downloaded archive, keeping its real extension. */
+export function archiveFileName(url: string): string {
+  const path = new URL(url).pathname.toLowerCase();
+  if (path.endsWith('.zip')) return 'archive.zip';
+  if (path.endsWith('.tar.xz')) return 'archive.tar.xz';
+  if (path.endsWith('.tar.bz2')) return 'archive.tar.bz2';
+  return 'archive.tar.gz';
+}
+
+/**
+ * Command to unpack an archive into dir. On Windows, use the system bsdtar
+ * explicitly: it reads .zip and .tar.* alike, and it treats "C:\..." as a
+ * local path — GNU tar from Git for Windows, often first on PATH, parses
+ * "C:" as a remote host and fails. Elsewhere, unzip for .zip and tar
+ * (which auto-detects compression on -x) for the rest.
+ */
+export function extractCommand(archivePath: string, dir: string): [string, string[]] {
+  if (process.platform === 'win32') {
+    const systemTar = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe');
+    return [systemTar, ['-xf', archivePath, '-C', dir]];
+  }
+  if (archivePath.endsWith('.zip')) return ['unzip', ['-o', '-q', archivePath, '-d', dir]];
+  return ['tar', ['-xf', archivePath, '-C', dir]];
 }
 
 function isCompatible(entry: RegistryEntry, platform: string): boolean {

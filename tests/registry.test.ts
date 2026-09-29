@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
-import { RegistryManager } from '../src/registry/index.js';
+import { RegistryManager, archiveFileName, extractCommand } from '../src/registry/index.js';
 import type { RegistryEntry } from '../src/registry/index.js';
 import type { McacpConfig } from '../src/types/config.js';
 
@@ -137,6 +137,21 @@ describe('RegistryManager', () => {
 
     const pinned = await manager.install('dirac', '0.5.15');
     expect(pinned.args).toEqual(['-y', 'dirac-cli@0.5.15', '--acp']);
+  });
+
+  it('keeps the archive extension and picks a matching extractor', () => {
+    expect(archiveFileName('https://x.test/agy-1.2.1-windows-x86_64.zip')).toBe('archive.zip');
+    expect(archiveFileName('https://x.test/a.tar.gz?sig=1')).toBe('archive.tar.gz');
+    expect(archiveFileName('https://x.test/a.tar.xz')).toBe('archive.tar.xz');
+
+    const [cmd, args] = extractCommand('/d/archive.zip', '/d');
+    if (process.platform === 'win32') {
+      expect(cmd.toLowerCase()).toMatch(/system32[\\/]tar\.exe$/);
+      expect(args).toEqual(['-xf', '/d/archive.zip', '-C', '/d']);
+    } else {
+      expect(cmd).toBe('unzip');
+      expect(extractCommand('/d/archive.tar.gz', '/d')).toEqual(['tar', ['-xf', '/d/archive.tar.gz', '-C', '/d']]);
+    }
   });
 
   it('search returns results filtered by query', async () => {
