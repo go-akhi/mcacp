@@ -57,9 +57,13 @@ export class PromptHandler {
     this.ensureDispatcher(handle, sessionId, session);
 
     // Fire the prompt — don't await. Completion/error becomes an event.
+    // `session/prompt` is long-running: it stays open for the entire duration
+    // of the agent's work. We pass `promptTimeoutMs` (0 = unlimited by default)
+    // so the agent isn't abandoned mid-task, which would orphan it and stall
+    // any follow-up prompt on the same session.
     handle.transport.request('session/prompt', {
       sessionId, prompt: blocks,
-    }).then((result) => {
+    }, this.config.promptTimeoutMs).then((result) => {
       const r = result as SessionPromptResult;
       this.sessions.touchSession(sessionId);
       this.flushChunkBuffer(session);
@@ -67,6 +71,11 @@ export class PromptHandler {
       session.promptState = 'idle';
       this.unregisterSession(handle, sessionId);
     }).catch((err) => {
+      // If we gave up on a prompt due to a transport timeout, tell the agent to
+      // stop so it doesn't keep running an orphaned task behind our back.
+      if ((err as { code?: unknown })?.code === 'REQUEST_TIMEOUT' && !handle.transport.closed) {
+        try { handle.transport.notify('session/cancel', { sessionId }); } catch { /* best effort */ }
+      }
       this.flushChunkBuffer(session);
       this.pushEvent(session, { type: 'error', message: err?.message ?? String(err) });
       session.promptState = 'idle';
@@ -299,6 +308,11 @@ export class PromptHandler {
           const target = d.sessions.get(notif.sessionId);
           if (target) {
             this.sessions.applySettingsUpdate(target, notif.update);
+            // Streaming output is activity. Without this the auto-reap timer
+            // only ever resets on session create/load and prompt *completion*,
+            // so an agent that streams for longer than `autoReapMs` looks idle
+            // and gets reaped mid-task — killing the very prompt it's answering.
+            this.lifecycle.touchActivity(handle.agentId);
             this.pushEventConsolidated(target, { type: 'update', update: notif.update });
             this.updateAgentStatus(handle, notif.update);
             return;
