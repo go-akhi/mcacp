@@ -209,6 +209,25 @@ describe('AgentRequestHandler', () => {
       expect((result as any).terminalId).toMatch(/^term_\d+$/);
     });
 
+    it('reports a command that cannot start instead of hanging', async () => {
+      handler.registerSession('sess-term-missing', tempDir);
+      const { terminalId } = await handler.dispatch('terminal/create', {
+        sessionId: 'sess-term-missing',
+        command: 'definitely-not-a-real-command-mcacp',
+      }) as { terminalId: string };
+
+      const exit = await handler.dispatch('terminal/wait_for_exit', {
+        sessionId: 'sess-term-missing', terminalId,
+      }) as { exitCode?: number };
+      expect(exit.exitCode).toBe(127);
+
+      const out = await handler.dispatch('terminal/output', {
+        sessionId: 'sess-term-missing', terminalId,
+      }) as { output: string; exitStatus?: { exitCode?: number } };
+      expect(out.output).toMatch(/ENOENT/);
+      expect(out.exitStatus?.exitCode).toBe(127);
+    });
+
     it('assigns sequential terminal IDs', async () => {
       handler.registerSession('sess-term-seq', tempDir);
 

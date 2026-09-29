@@ -372,6 +372,30 @@ describe('PromptHandler', () => {
       expect(result.events.some(e => e.type === 'permission_request')).toBe(true);
     });
 
+    it('answers session/request_permission in the ACP response shape', async () => {
+      handler.promptPolled('sess-1', 'Hello');
+      const setRequestHandler = transport.transport.setRequestHandler as ReturnType<typeof vi.fn>;
+      const agentRequest = setRequestHandler.mock.calls.at(-1)![0] as
+        (method: string, params: unknown, id: number) => Promise<unknown>;
+      const params = {
+        sessionId: 'sess-1',
+        toolCall: { toolCallId: 'tc-1', title: 'Run command' },
+        options: [{ optionId: 'allow-1', name: 'Allow', kind: 'allow_once' }],
+      };
+
+      // Engine-decided policies (mock engine selects allow-1)
+      await expect(agentRequest('session/request_permission', params, 1))
+        .resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow-1' } });
+
+      // Operator policy: resolved later via grantPermission / cancellation
+      const session = sessions.get('sess-1')!;
+      session.permissionPolicy = 'operator';
+      const pending = agentRequest('session/request_permission', params, 2);
+      await Promise.resolve();
+      session.pendingPermission!.resolve({ cancelled: {} });
+      await expect(pending).resolves.toEqual({ outcome: { outcome: 'cancelled' } });
+    });
+
     it('resolves with collected events on timeout', async () => {
       // Use a short timeout
       const promise = handler.promptSync('sess-1', 'Hello', 50);

@@ -7,7 +7,7 @@ import type { McacpConfig, PermissionPolicy } from '../types/config.js';
 import type { ActiveSession, BarePromptEvent, PromptEvent, SessionSettings } from './index.js';
 import { LifecycleManager } from '../acp/lifecycle.js';
 import { SessionManager } from './index.js';
-import { PermissionEngine } from '../permissions/index.js';
+import { PermissionEngine, toAcpPermissionResponse } from '../permissions/index.js';
 import { findOptionByCategory } from './config-options.js';
 
 /** Per-agent dispatch table for sessions with active prompts. */
@@ -326,10 +326,10 @@ export class PromptHandler {
           const permParams = params as RequestPermissionParams;
           const target = d.sessions.get(permParams.sessionId);
           if (target) {
-            if (target.permissionPolicy === 'operator') {
-              return this.handleOperatorPermission(target, permParams);
-            }
-            return this.permissions.handle(target, handle, permParams, []);
+            const outcome = target.permissionPolicy === 'operator'
+              ? await this.handleOperatorPermission(target, permParams)
+              : await this.permissions.handle(target, handle, permParams, []);
+            return toAcpPermissionResponse(outcome);
           }
         }
         if (d.prevRequestHandler) {

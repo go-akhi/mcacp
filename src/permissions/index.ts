@@ -9,6 +9,18 @@ export type ElicitationSender = (
   schema: Record<string, unknown>,
 ) => Promise<{ action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }>;
 
+/**
+ * Convert an internal outcome to the ACP session/request_permission response:
+ * `{ outcome: { outcome: "selected", optionId } }` or `{ outcome: { outcome: "cancelled" } }`.
+ */
+export function toAcpPermissionResponse(outcome: RequestPermissionOutcome): {
+  outcome: { outcome: 'selected'; optionId: string } | { outcome: 'cancelled' };
+} {
+  return 'selected' in outcome
+    ? { outcome: { outcome: 'selected', optionId: outcome.selected.optionId } }
+    : { outcome: { outcome: 'cancelled' } };
+}
+
 export class PermissionEngine {
   private elicitationSender: ElicitationSender | null = null;
 

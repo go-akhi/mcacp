@@ -132,6 +132,15 @@ export class AgentRequestHandler {
       for (const waiter of terminal.waiters) waiter({ exitCode: terminal.exitCode, signal: terminal.signal });
       terminal.waiters = [];
     });
+    // A command that can't start (e.g. ENOENT) emits 'error' and never 'exit'.
+    // Unhandled, that would crash MCACP; ignored, the agent would wait forever.
+    child.on('error', (err) => {
+      if (terminal.exitCode !== undefined) return;
+      appendOutput(Buffer.from(`${err.message}\n`));
+      terminal.exitCode = 127;
+      for (const waiter of terminal.waiters) waiter({ exitCode: terminal.exitCode });
+      terminal.waiters = [];
+    });
 
     this.terminals.set(id, terminal);
     // Track which session owns this terminal for cleanup
