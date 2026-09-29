@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig, discoverEditorAgents } from '../config/index.js';
 import { RegistryManager } from '../registry/index.js';
 import { LifecycleManager } from '../acp/lifecycle.js';
+import { AcpTransport } from '../acp/transport.js';
 import { SessionManager } from '../sessions/index.js';
 import { PromptHandler } from '../sessions/prompt.js';
 import { PermissionEngine } from '../permissions/index.js';
@@ -568,6 +569,23 @@ export async function createServer(configPath?: string) {
       };
       await server.connect(transport);
 
+      // Don't leave agents running when MCACP goes away. Host disconnect (stdin EOF)
+      // and signals get a brief graceful shutdown, then the 'exit' hook kills what's left.
+      // Keep the grace short: MCP hosts force-kill the server ~2s after closing stdin,
+      // and on Windows that kill skips exit handlers entirely.
+      let exiting = false;
+      const exitGracefully = async () => {
+        if (exiting) return;
+        exiting = true;
+        await Promise.race([
+          Promise.allSettled(lifecycle.getAllAgents().map(h => lifecycle.shutdown(h.agentId))),
+          new Promise(r => setTimeout(r, 1000)),
+        ]);
+        process.exit(0);
+      };
+      process.once('exit', () => AcpTransport.killAll());
+      for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.once(signal, exitGracefully);
+      process.stdin.once('end', exitGracefully);
     },
   };
 }

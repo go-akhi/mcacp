@@ -7,6 +7,7 @@ import type { ChildProcess } from 'node:child_process';
 
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
+  spawnSync: vi.fn(() => ({ status: 0 })),
 }));
 
 /**

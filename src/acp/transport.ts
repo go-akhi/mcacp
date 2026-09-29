@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { createInterface } from 'node:readline';
+import { killProcessTree } from './process-tree.js';
 import type {
   JsonRpcRequest, JsonRpcResponse, JsonRpcNotification, JsonRpcMessage, JsonRpcError, RequestId,
 } from '../types/acp.js';
@@ -23,6 +24,18 @@ type IncomingRequestHandler = (method: string, params: unknown, id: RequestId) =
 type NotificationHandler = (method: string, params: unknown) => void;
 
 export class AcpTransport extends EventEmitter {
+  /** Transports with a live agent process, for cleanup when MCACP itself exits. */
+  private static live = new Set<AcpTransport>();
+
+  /** Synchronously kill every live agent process tree. Safe to call from a process 'exit' handler. */
+  static killAll(): void {
+    for (const t of AcpTransport.live) {
+      t._closed = true;
+      if (t.process) killProcessTree(t.process);
+    }
+    AcpTransport.live.clear();
+  }
+
   private process: ChildProcess | null = null;
   private pendingRequests = new Map<string | number, PendingRequest>();
   private nextId = 1;
@@ -49,15 +62,22 @@ export class AcpTransport extends EventEmitter {
       env,
       cwd: this.options.cwd,
       shell: process.platform === 'win32',
+      // Own process group on POSIX so the whole tree can be signalled (see killProcessTree).
+      // Not on Windows, where detached opens a new console window.
+      detached: process.platform !== 'win32',
+      windowsHide: true,
     });
+    AcpTransport.live.add(this);
 
     this.process.on('exit', (code, signal) => {
+      AcpTransport.live.delete(this);
       this._closed = true;
       this.rejectAllPending(new Error(`Agent process exited (code=${code}, signal=${signal})`));
       this.emit('exit', code, signal);
     });
 
     this.process.on('error', (err) => {
+      AcpTransport.live.delete(this);
       this._closed = true;
       this.rejectAllPending(err);
       this.emit('error', err);
@@ -121,24 +141,31 @@ export class AcpTransport extends EventEmitter {
     this.send(msg);
   }
 
+  /**
+   * Close stdin so the agent can exit on its own, then kill the whole process
+   * tree if it hasn't exited within killTimeoutMs.
+   */
   async close(killTimeoutMs = 5000): Promise<void> {
     if (this._closed) return;
     this._closed = true;
     this.rejectAllPending(new Error('Transport closing'));
 
-    if (this.process && !this.process.killed) {
-      this.process.stdin?.end();
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(() => {
-          this.process?.kill('SIGKILL');
-          resolve();
-        }, killTimeoutMs);
-        this.process!.once('exit', () => {
-          clearTimeout(timer);
-          resolve();
-        });
-      });
+    const proc = this.process;
+    if (!proc || proc.exitCode != null || proc.signalCode != null) return;
+
+    proc.stdin?.end();
+    const exited = await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), killTimeoutMs);
+      proc.once('exit', () => { clearTimeout(timer); resolve(true); });
+    });
+
+    if (!exited) {
+      killProcessTree(proc);
+    } else if (process.platform !== 'win32' && proc.pid != null) {
+      // The group leader exited; sweep any members it left behind.
+      try { process.kill(-proc.pid, 'SIGKILL'); } catch { /* group already empty */ }
     }
+    AcpTransport.live.delete(this);
   }
 
   private send(msg: JsonRpcMessage): void {
