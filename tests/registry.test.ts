@@ -124,6 +124,21 @@ describe('RegistryManager', () => {
     );
   });
 
+  it('install keeps registry npx args and env', async () => {
+    globalThis.fetch = mockFetchJson([{
+      id: 'dirac', name: 'Dirac', version: '0.5.16', description: 'x', authors: [], license: 'MIT',
+      distribution: { npx: { package: 'dirac-cli@0.5.16', args: ['--acp'], env: { FOO: 'bar' } } },
+    }]);
+    const manager = new RegistryManager(makeConfig());
+    const inst = await manager.install('dirac');
+    expect(inst.command).toBe('npx');
+    expect(inst.args).toEqual(['-y', 'dirac-cli@0.5.16', '--acp']);
+    expect(inst.env).toEqual({ FOO: 'bar' });
+
+    const pinned = await manager.install('dirac', '0.5.15');
+    expect(pinned.args).toEqual(['-y', 'dirac-cli@0.5.15', '--acp']);
+  });
+
   it('search returns results filtered by query', async () => {
     globalThis.fetch = mockFetchJson(sampleEntries);
 

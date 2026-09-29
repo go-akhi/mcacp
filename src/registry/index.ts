@@ -14,7 +14,7 @@ export interface RegistryEntry {
   license: string;
   icon?: string;
   distribution: {
-    npx?: { package: string };
+    npx?: { package: string; args?: string[]; env?: Record<string, string> };
     binary?: Record<string, {
       archive: string;
       cmd: string;
@@ -93,7 +93,9 @@ export class RegistryManager {
       }
       const inst: InstalledAgent = {
         id: entry.id, name: entry.name, version: version ?? entry.version,
-        description: entry.description, command: 'npx', args: ['-y', pkg],
+        description: entry.description, command: 'npx',
+        args: ['-y', pkg, ...(entry.distribution.npx.args ?? [])],
+        env: entry.distribution.npx.env,
         distribution: 'npx', installedAt: new Date().toISOString(),
       };
       this.installed.set(entry.id, inst);

@@ -164,6 +164,52 @@ describe('session settings', () => {
     });
   });
 
+  it('setConfigOption sends real booleans for boolean options', async () => {
+    const yolo: SessionConfigOption = {
+      id: 'yolo', name: 'YOLO', category: 'mode', type: 'boolean', currentValue: false,
+    };
+    request.mockResolvedValueOnce({ sessionId: 's1', configOptions: [yolo] });
+    await mgr.newSession('agent-1', '/work');
+
+    request.mockResolvedValueOnce(null);
+    let result = await mgr.setConfigOption('s1', 'yolo', 'on');
+    expect(request).toHaveBeenLastCalledWith('session/set_config_option', {
+      sessionId: 's1', configId: 'yolo', type: 'boolean', value: true,
+    });
+    expect(result.configOptions?.[0].currentValue).toBe(true);
+
+    request.mockResolvedValueOnce(null);
+    result = await mgr.setConfigOption('s1', 'yolo', false);
+    expect(request).toHaveBeenLastCalledWith('session/set_config_option', {
+      sessionId: 's1', configId: 'yolo', type: 'boolean', value: false,
+    });
+    expect(result.configOptions?.[0].currentValue).toBe(false);
+
+    await expect(mgr.setConfigOption('s1', 'yolo', 'maybe')).rejects.toThrow(/Valid values: true, false/);
+  });
+
+  it('category lookups skip boolean options that share a category', async () => {
+    const toggle: SessionConfigOption = {
+      id: 'auto_approve', name: 'Auto-approve', category: 'mode', type: 'boolean', currentValue: false,
+    };
+    const mode: SessionConfigOption = {
+      id: 'mode', name: 'Mode', category: 'mode', type: 'select', currentValue: 'act',
+      options: [{ value: 'plan', name: 'Plan' }, { value: 'act', name: 'Act' }],
+    };
+    request.mockResolvedValueOnce({
+      sessionId: 's1', configOptions: [toggle, mode],
+      modes: { availableModes: [{ id: 'plan', name: 'Plan' }, { id: 'act', name: 'Act' }], currentModeId: 'act' },
+    });
+    await mgr.newSession('agent-1', '/work');
+    const handler = new PromptHandler(lifecycle, mgr, new PermissionEngine(), config);
+    request.mockResolvedValueOnce({});
+    await handler.setMode('s1', 'plan');
+
+    const opts = mgr.getSettings('s1').configOptions!;
+    expect(opts.find(o => o.id === 'auto_approve')?.currentValue).toBe(false);
+    expect(opts.find(o => o.id === 'mode')?.currentValue).toBe('plan');
+  });
+
   it('setThinkingLevel errors when unsupported', async () => {
     request.mockResolvedValueOnce({ sessionId: 's1', configOptions: [modelOption()] });
     await mgr.newSession('agent-1', '/work');

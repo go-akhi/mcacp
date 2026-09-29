@@ -427,11 +427,12 @@ export async function createServer(configPath?: string) {
 
   server.tool(
     'set_config_option',
-    'Set any agent-defined session config option by id (see configOptions in get_session_settings). Use for selectors not covered by set_model / set_thinking_level / set_mode.',
+    'Set any agent-defined session config option by id (see configOptions in get_session_settings). Use for selectors and on/off toggles not covered by set_model / set_thinking_level / set_mode.',
     {
       sessionId: z.string().describe('Session ID'),
       configId: z.string().describe('Config option id'),
-      value: z.string().describe('Value (or display name) to select'),
+      value: z.union([z.string(), z.boolean()])
+        .describe('For select options, the value or display name. For boolean options, true/false (or "on"/"off").'),
     },
     async ({ sessionId, configId, value }) => ({
       content: [{ type: 'text' as const, text: JSON.stringify(

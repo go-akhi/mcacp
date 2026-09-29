@@ -173,21 +173,32 @@ export interface SessionConfigSelectGroup {
   options: SessionConfigSelectOption[];
 }
 
-export interface SessionConfigOption {
+interface SessionConfigOptionBase {
   id: string;
   name: string;
   description?: string;
   category?: SessionConfigOptionCategory;
+}
+
+export interface SessionConfigSelect extends SessionConfigOptionBase {
   type: 'select';
   currentValue: string;
   options: SessionConfigSelectOption[] | SessionConfigSelectGroup[];
 }
 
-export interface SessionSetConfigOptionParams {
+export interface SessionConfigBoolean extends SessionConfigOptionBase {
+  type: 'boolean';
+  currentValue: boolean;
+}
+
+export type SessionConfigOption = SessionConfigSelect | SessionConfigBoolean;
+
+export type SessionConfigValue = string | boolean;
+
+export type SessionSetConfigOptionParams = {
   sessionId: SessionId;
   configId: string;
-  value: string;
-}
+} & ({ type: 'boolean'; value: boolean } | { value: string });
 
 export interface SessionSetConfigOptionResult {
   configOptions: SessionConfigOption[];

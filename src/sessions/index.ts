@@ -4,6 +4,7 @@ import type { McacpConfig, PermissionPolicy } from '../types/config.js';
 import type {
   SessionId, SessionNewResult, SessionLoadResult, McpServer, SessionUpdate, StopReason,
   SessionModeState, SessionModelState, SessionConfigOption, SessionSetConfigOptionResult,
+  SessionConfigValue,
 } from '../types/acp.js';
 import { LifecycleManager } from '../acp/lifecycle.js';
 import { getAgentConfig } from '../config/index.js';
@@ -137,18 +138,21 @@ export class SessionManager {
   }
 
   /** Set an agent-defined config option (session/set_config_option). */
-  async setConfigOption(sessionId: SessionId, configId: string, value: string): Promise<SessionSettings> {
+  async setConfigOption(sessionId: SessionId, configId: string, value: SessionConfigValue): Promise<SessionSettings> {
     const session = this.getSession(sessionId);
     const option = session.configOptions?.find(o => o.id === configId);
     const resolved = option ? resolveChoice(option, value) : value;
     const handle = this.lifecycle.getAgent(session.agentId);
-    const result = await handle.transport.request('session/set_config_option', {
-      sessionId, configId, value: resolved,
-    }) as SessionSetConfigOptionResult | null;
+    // Boolean values must be tagged with type: "boolean"; select values are sent bare.
+    const result = await handle.transport.request('session/set_config_option', typeof resolved === 'boolean'
+      ? { sessionId, configId, type: 'boolean', value: resolved }
+      : { sessionId, configId, value: resolved },
+    ) as SessionSetConfigOptionResult | null;
     if (result?.configOptions) {
       session.configOptions = result.configOptions;
     } else if (option) {
-      option.currentValue = resolved;
+      // resolveChoice returns a boolean for boolean options and a string for selects
+      (option as { currentValue: SessionConfigValue }).currentValue = resolved;
     }
     this.syncFromConfigOptions(session);
     this.lifecycle.touchActivity(session.agentId);
